@@ -142,4 +142,68 @@ describe('compiler: text transform', () => {
     const { code } = compileWithTextTransform(`<Comp>{{ "Hello" }}</Comp>`)
     expect(code).toMatchSnapshot()
   })
+
+  test.each([
+    ['1 + 2', '3'],
+    ["'hello' + ' world'", 'hello world'],
+    ["1 + 2 + '3'", '33'],
+    ["'1' + 2 + 3", '123'],
+    ['-(2 + 3) * 4 / 2', '-10'],
+    ['8 - 5 % 2', '7'],
+    ['-0 + -0', '0'],
+    ["'' + ''", ''],
+    ["'<b>' + '&'", '&lt;b&gt;&amp;'],
+    ['(1 as number) + 2', '3'],
+  ])('folds literal text expression %s', (expression, text) => {
+    const { ir, helpers } = compileWithTextTransform(
+      `<div>{{ ${expression} }}</div>`,
+      { expressionPlugins: ['typescript'] },
+    )
+    expect([...ir.template.keys()]).toEqual([`<div>${text}`])
+    expect(helpers).not.toContain('txt')
+    expect(helpers).not.toContain('setText')
+    expect(helpers).not.toContain('toDisplayString')
+    expect(helpers).not.toContain('renderEffect')
+  })
+
+  test.each([
+    'value + 1',
+    'value.current + 1',
+    'getValue() + 1',
+    '1n + 2',
+    '1 / 0',
+    '0 / 0',
+    '1e308 * 2',
+    '2 ** 3',
+    "'\\r' + 'x'",
+    "'\\n' + 'x'",
+    "'\\0' + 'x'",
+  ])('preserves runtime evaluation of %s', expression => {
+    const { code, helpers } = compileWithTextTransform(
+      `<div>{{ ${expression} }}</div>`,
+    )
+    expect(helpers).toContain('setText')
+    expect(code).toContain(expression)
+  })
+
+  test('concatenates adjacent folded interpolations as text', () => {
+    const { ir, helpers } = compileWithTextTransform(
+      '<div>{{ 1 + 2 }}{{ 3 + 4 }}</div>',
+    )
+    expect([...ir.template.keys()]).toEqual(['<div>37'])
+    expect(helpers).not.toContain('setText')
+  })
+
+  test.each(['Comp', 'template v-if="ok"'])(
+    'materializes markup-like folded text in %s',
+    tag => {
+      const { code, helpers } = compileWithTextTransform(
+        `<${tag}>{{ '<' }}{{ 'b' + '>' }}</${tag.split(' ')[0]}>`,
+      )
+      expect(code).toContain('_template("")')
+      expect(code).not.toContain('_template("<b>")')
+      expect(helpers).toContain('setText')
+      expect(helpers).not.toContain('toDisplayString')
+    },
+  )
 })

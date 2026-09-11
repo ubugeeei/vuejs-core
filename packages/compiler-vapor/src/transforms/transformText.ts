@@ -8,7 +8,9 @@ import {
   type TemplateChildNode,
   type TextNode,
   createSimpleExpression,
+  unwrapTSNode,
 } from '@vue/compiler-dom'
+import type { Node } from '@babel/types'
 import type { NodeTransform, TransformContext } from '../transform'
 import { DynamicFlag, IRNodeTypes } from '../ir'
 import { getLiteralExpressionValue } from '../utils'
@@ -139,12 +141,12 @@ function processInterpolation(context: TransformContext<InterpolationNode>) {
     (isElementChild || text !== '')
   ) {
     if (
-      parentNode.type === NodeTypes.ELEMENT &&
-      shouldUseCreateElement(
-        parentNode,
-        context.parent as TransformContext<ElementNode>,
-      ) &&
-      text[0] === '<'
+      text[0] === '<' &&
+      (!isElementChild ||
+        shouldUseCreateElement(
+          parentNode,
+          context.parent as TransformContext<ElementNode>,
+        ))
     ) {
       materializeLiteralTextNode(
         createSimpleExpression(text, true, context.node.loc),
@@ -274,9 +276,17 @@ function processTextLikeChildren(nodes: TextLike[], context: TransformContext) {
       exp = createSimpleExpression(node.content, true, node.loc)
     } else {
       exp = node.content as SimpleExpressionNode
+      if (exp.ast && getLiteralExpressionValue(exp) === null) {
+        const value = evaluateTextExpression(exp.ast)
+        // HTML parsing normalizes CR/NUL and strips a leading LF in pre/textarea.
+        // Keep these values on the runtime text-setting path.
+        if (value !== undefined && !/[\r\n\0]/.test(String(value))) {
+          exp = createSimpleExpression(String(value), true, exp.loc)
+        }
+      }
     }
 
-    if (exp.content) exps.push(exp)
+    if (exp.content || exp.isStatic) exps.push(exp)
   }
 
   return exps
@@ -284,4 +294,61 @@ function processTextLikeChildren(nodes: TextLike[], context: TransformContext) {
 
 function isTextLike(node: TemplateChildNode): node is TextLike {
   return node.type === NodeTypes.INTERPOLATION || node.type === NodeTypes.TEXT
+}
+
+function evaluateTextExpression(node: Node): string | number | undefined {
+  node = unwrapTSNode(node)
+  switch (node.type) {
+    case 'StringLiteral':
+      return node.value
+    case 'NumericLiteral':
+      return Number.isFinite(node.value) ? node.value : undefined
+    case 'ParenthesizedExpression':
+      return evaluateTextExpression(node.expression)
+    case 'UnaryExpression': {
+      const value = evaluateTextExpression(node.argument)
+      if (typeof value !== 'number') return
+      switch (node.operator) {
+        case '+':
+          return value
+        case '-':
+          return -value
+      }
+      return
+    }
+    case 'BinaryExpression': {
+      const left = evaluateTextExpression(node.left)
+      const right = evaluateTextExpression(node.right)
+      if (left === undefined || right === undefined) return
+      if (
+        node.operator === '+' &&
+        (typeof left === 'string' || typeof right === 'string')
+      ) {
+        return String(left) + String(right)
+      }
+      if (typeof left !== 'number' || typeof right !== 'number') return
+      let value: number
+      switch (node.operator) {
+        case '+':
+          value = left + right
+          break
+        case '-':
+          value = left - right
+          break
+        case '*':
+          value = left * right
+          break
+        case '/':
+          value = left / right
+          break
+        case '%':
+          value = left % right
+          break
+        default:
+          // Exponentiation is implementation-approximated across JS engines.
+          return
+      }
+      if (Number.isFinite(value)) return value
+    }
+  }
 }
