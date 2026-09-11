@@ -9,18 +9,13 @@ import {
   IRSlotType,
   type IRSlots,
   type IRTemplate,
+  type InsertionStateTypes,
   type OperationNode,
   type RootIRNode,
+  type SetTextIRNode,
   isBlockOperation,
 } from '../ir'
 import { getLiteralExpressionValue } from '../utils'
-
-interface TemplateLocation {
-  dynamic: IRDynamicInfo
-  owner: IRDynamicInfo
-  offset: number
-  parentOffset: number
-}
 
 interface TemplateEdit {
   offset: number
@@ -29,87 +24,123 @@ interface TemplateEdit {
   delta?: number
 }
 
+interface TemplatePlan {
+  dynamic: IRDynamicInfo
+  edits: TemplateEdit[]
+}
+
+interface BlockData {
+  block: BlockIRNode
+  operations: Set<OperationNode>
+  boundaries: InsertionStateTypes[]
+  texts: Map<number, { operation: SetTextIRNode; text: string }>
+  changed: boolean
+}
+
 // The first computation rule consumes SET_TEXT operands. Other consumers need
 // their own serialization rules: a numeric prop must remain a number, for example.
 export function compileTimeComputation(ir: RootIRNode): void {
   const blocks = collectBlocks(ir.block)
-  const locations = new Map<number, TemplateLocation>()
-  const templates = new Map<IRDynamicInfo, TemplateEdit[]>()
-  const allLocations: TemplateLocation[] = []
+  let hasStaticText = false
+  for (const { block, texts } of blocks) {
+    for (const operation of block.operation) {
+      if (operation.type !== IRNodeTypes.SET_TEXT) continue
+      const text = computeText(operation)
+      if (text !== undefined) {
+        texts.set(operation.element, { operation, text })
+        hasStaticText = true
+      }
+    }
+    for (const effect of block.effect) {
+      for (const operation of effect.operations) {
+        if (operation.type === IRNodeTypes.SET_TEXT) computeText(operation)
+      }
+    }
+  }
+  // Most templates have no computable text. Avoid indexing templates and DOM
+  // positions until a computation can actually remove a text operation.
+  if (!hasStaticText) return
+
+  const templates = new Map<number, TemplatePlan[]>()
+  const plans = new Map<IRDynamicInfo, TemplatePlan>()
   const removed = new Set<OperationNode>()
   const candidates = new Set<number>()
-
-  for (const block of blocks) locate(block.dynamic)
-
-  for (const block of blocks) {
-    for (const operation of block.operation) fold(operation, true)
-    for (const effect of block.effect) {
-      for (const operation of effect.operations) fold(operation, false)
-    }
-  }
-
+  for (const data of blocks) planTemplate(data.block.dynamic, data)
   if (!removed.size) return
 
-  // Operation boundaries are prefix lengths, so removing an earlier text write
-  // must also move the boundary of a later component or structural block.
-  for (const block of blocks) {
-    const textChildren = new Set<number>()
-    for (const op of block.operation) {
-      if (removed.has(op) && op.type === IRNodeTypes.SET_TEXT && op.generated) {
-        textChildren.add(op.element)
+  const references = new Set<number>()
+  for (const { block, operations, boundaries, changed } of blocks) {
+    if (changed) {
+      const textChildren = new Set<number>()
+      for (const op of block.operation) {
+        if (
+          removed.has(op) &&
+          op.type === IRNodeTypes.SET_TEXT &&
+          op.generated
+        ) {
+          textChildren.add(op.element)
+        }
+      }
+      for (const op of operations) {
+        if (
+          !removed.has(op) &&
+          op.type === IRNodeTypes.SET_TEXT &&
+          op.generated
+        ) {
+          textChildren.delete(op.element)
+        }
+      }
+      for (const op of block.operation) {
+        if (
+          op.type === IRNodeTypes.GET_TEXT_CHILD &&
+          textChildren.has(op.parent)
+        ) {
+          removed.add(op)
+        }
+      }
+      // Boundaries are operation prefix lengths. Only blocks with boundaries
+      // need the index map; ordinary static text blocks can compact directly.
+      const prefix = boundaries.length ? [0] : undefined
+      let length = 0
+      for (const op of block.operation) {
+        if (!removed.has(op)) block.operation[length++] = op
+        if (prefix) prefix.push(length)
+      }
+      block.operation.length = length
+      for (const op of boundaries) {
+        if (op.operationIndex !== undefined) {
+          op.operationIndex = prefix![op.operationIndex]
+        }
       }
     }
-    for (const op of blockOperations(block)) {
-      if (
-        !removed.has(op) &&
-        op.type === IRNodeTypes.SET_TEXT &&
-        op.generated
-      ) {
-        textChildren.delete(op.element)
-      }
+    // Reuse the operation inventory for liveness instead of walking the tree
+    // and constructing the same Set again for each cleanup step.
+    for (const id of block.returns) references.add(id)
+    for (const op of operations) {
+      if (removed.has(op)) continue
+      if ('element' in op) references.add(op.element)
+      if ('id' in op) references.add(op.id)
+      if ('elements' in op) op.elements.forEach(id => references.add(id))
+      if ('parent' in op && op.parent !== undefined) references.add(op.parent)
+      if ('anchor' in op && op.anchor !== undefined) references.add(op.anchor)
     }
-    for (const operation of block.operation) {
-      if (
-        operation.type === IRNodeTypes.GET_TEXT_CHILD &&
-        textChildren.has(operation.parent)
-      ) {
-        removed.add(operation)
-      }
-    }
-    const prefix = [0]
-    for (const operation of block.operation) {
-      prefix.push(prefix[prefix.length - 1] + (removed.has(operation) ? 0 : 1))
-    }
-    for (const operation of blockOperations(block)) {
-      if (
-        isBlockOperation(operation) &&
-        operation.operationIndex !== undefined
-      ) {
-        operation.operationIndex = prefix[operation.operationIndex]
-      }
-    }
-    block.operation = block.operation.filter(op => !removed.has(op))
   }
 
-  // Several template instances may share one registry entry before folding.
-  // Specialize each instance, then deduplicate using the complete template key.
+  // Shared templates can have different computed values at each use site.
   const entries: IRTemplate[] = []
   const indices = new Map<string, number>()
-  const owners = new Map<number, IRDynamicInfo[]>()
-  for (const owner of templates.keys()) {
-    const index = owner.template!
-    const group = owners.get(index)
-    if (group) group.push(owner)
-    else owners.set(index, [owner])
-  }
   ir.template.entries.forEach((entry, index) => {
-    const group = owners.get(index)
+    const group = templates.get(index)
     if (!group) {
       intern(entry)
       return
     }
-    for (const owner of group) {
-      const edits = templates.get(owner)!.sort((a, b) => a.offset - b.offset)
+    for (const { dynamic, edits } of group) {
+      if (!edits.length) {
+        dynamic.template = intern(entry)
+        continue
+      }
+      edits.sort((a, b) => a.offset - b.offset)
       const chunks: string[] = []
       let cursor = 0
       let delta = 0
@@ -119,118 +150,111 @@ export function compileTimeComputation(ir: RootIRNode): void {
         edit.delta = delta += edit.content.length - edit.length
       }
       chunks.push(entry.content.slice(cursor))
-      owner.template = intern({ ...entry, content: chunks.join('') })
+      dynamic.template = intern({ ...entry, content: chunks.join('') })
     }
   })
   ir.template.entries = entries
+  for (const { block } of blocks) updateDynamic(block.dynamic)
 
-  for (const location of allLocations) {
-    const { dynamic, owner, offset, parentOffset } = location
-    const edits = templates.get(owner)!
-    if (dynamic !== owner && dynamic.templateOffset !== undefined) {
-      dynamic.templateOffset +=
-        getShift(edits, offset) - getShift(edits, parentOffset)
-    }
-    if (dynamic.textContentOffset !== undefined) {
-      dynamic.textContentOffset +=
-        getShift(edits, offset + dynamic.textContentOffset) -
-        getShift(edits, offset)
-    }
-  }
-
-  // Keep references needed by props, events, insertions and returned roots.
-  const references = new Set<number>()
-  for (const block of blocks) {
-    for (const id of block.returns) references.add(id)
-    for (const op of blockOperations(block)) {
-      if ('element' in op) references.add(op.element)
-      if ('id' in op) references.add(op.id)
-      if ('elements' in op) op.elements.forEach(id => references.add(id))
-      if ('parent' in op && op.parent !== undefined) references.add(op.parent)
-      if ('anchor' in op && op.anchor !== undefined) references.add(op.anchor)
-    }
-  }
-  for (const id of candidates) {
-    const dynamic = locations.get(id)!.dynamic
-    if (!references.has(id)) dynamic.flags &= ~DynamicFlag.REFERENCED
-  }
-  for (const block of blocks) pruneReferences(block.dynamic)
-
-  function locate(dynamic: IRDynamicInfo, parent?: TemplateLocation): void {
-    let location: TemplateLocation | undefined
+  function planTemplate(
+    dynamic: IRDynamicInfo,
+    data: BlockData,
+    plan?: TemplatePlan,
+    parentOffset = 0,
+  ): void {
+    let offset = 0
     if (dynamic.template !== undefined) {
-      templates.set(dynamic, [])
-      location = { dynamic, owner: dynamic, offset: 0, parentOffset: 0 }
-    } else if (parent && dynamic.templateOffset !== undefined) {
-      location = {
-        dynamic,
-        owner: parent.owner,
-        offset: parent.offset + dynamic.templateOffset,
-        parentOffset: parent.offset,
+      plan = { dynamic, edits: [] }
+      plans.set(dynamic, plan)
+      const group = templates.get(dynamic.template)
+      if (group) group.push(plan)
+      else templates.set(dynamic.template, [plan])
+    } else if (plan && dynamic.templateOffset !== undefined) {
+      offset = parentOffset + dynamic.templateOffset
+    } else {
+      plan = undefined
+    }
+    const computed = dynamic.id !== undefined && data.texts.get(dynamic.id)
+    if (plan && computed) {
+      const { operation, text } = computed
+      let edit: TemplateEdit | undefined
+      if (operation.generated) {
+        if (dynamic.textContentOffset !== undefined) {
+          edit = {
+            offset: offset + dynamic.textContentOffset,
+            length: 1,
+            content: escapeHtml(text),
+          }
+        }
+      } else if (dynamic === plan.dynamic) {
+        // Preserve empty text nodes and the text factory's leading '<' guard.
+        if (text && text[0] !== '<') {
+          edit = {
+            offset: 0,
+            length: ir.template.entries[dynamic.template!].content.length,
+            content: text,
+          }
+        }
+      } else if (text) {
+        // Removing an empty child changes sibling and hydration positions.
+        edit = { offset, length: 1, content: escapeHtml(text) }
+      }
+      if (edit) {
+        plan.edits.push(edit)
+        removed.add(operation)
+        candidates.add(operation.element)
+        data.changed = true
       }
     }
-    if (location) {
-      allLocations.push(location)
-      if (dynamic.id !== undefined) locations.set(dynamic.id, location)
-    }
-    for (const child of dynamic.children) locate(child, location)
+    for (const child of dynamic.children)
+      planTemplate(child, data, plan, offset)
   }
 
-  function fold(operation: OperationNode, inline: boolean) {
-    if (operation.type !== IRNodeTypes.SET_TEXT) return
-    let computed = false
-    operation.values = operation.values.map(exp => {
-      if (!exp.ast || getLiteralExpressionValue(exp) !== null) return exp
-      const value = evaluateConstant(exp.ast)
-      // HTML parsing normalizes CR/NUL and strips a leading LF in pre/textarea.
-      if (value === undefined || /[\r\n\0]/.test(String(value))) return exp
-      computed = true
-      return createSimpleExpression(String(value), true, exp.loc)
-    })
-    if (!computed || !inline) return
-    const values = operation.values.map(value =>
-      getLiteralExpressionValue(value),
-    )
-    if (values.some(value => value === null)) return
-    const text = values.join('')
-    if (/[\r\n\0]/.test(text)) return
-    const location = locations.get(operation.element)
-    if (!location) return
-    const { dynamic, owner, offset } = location
-    let edit: TemplateEdit
-    if (operation.generated) {
-      if (dynamic.textContentOffset === undefined) return
-      edit = {
-        offset: offset + dynamic.textContentOffset,
-        length: 1,
-        content: escapeHtml(text),
-      }
-    } else if (dynamic === owner) {
-      // Empty text must remain a node, and a leading '<' selects HTML parsing
-      // in the template factory. Preserve the imperative write in both cases.
-      if (!text || text[0] === '<') return
-      edit = {
-        offset: 0,
-        length: ir.template.entries[owner.template!].content.length,
-        content: text,
-      }
+  // Update positions and liveness together, without allocating a location
+  // object for every node. Descendants use the original offset during traversal.
+  function updateDynamic(
+    dynamic: IRDynamicInfo,
+    plan?: TemplatePlan,
+    parentOffset = 0,
+    parentShift = 0,
+  ): void {
+    let offset = 0
+    let shift = 0
+    if (dynamic.template !== undefined) {
+      plan = plans.get(dynamic)
+    } else if (plan && dynamic.templateOffset !== undefined) {
+      offset = parentOffset + dynamic.templateOffset
+      shift = getShift(plan.edits, offset)
+      dynamic.templateOffset += shift - parentShift
     } else {
-      // Removing an empty text node would change sibling and hydration indices.
-      if (!text) return
-      edit = { offset, length: 1, content: escapeHtml(text) }
+      plan = undefined
     }
-    templates.get(owner)!.push(edit)
-    removed.add(operation)
-    candidates.add(operation.element)
+    if (plan && dynamic.textContentOffset !== undefined) {
+      dynamic.textContentOffset +=
+        getShift(plan.edits, offset + dynamic.textContentOffset) - shift
+    }
+    if (
+      dynamic.id !== undefined &&
+      candidates.has(dynamic.id) &&
+      !references.has(dynamic.id)
+    ) {
+      dynamic.flags &= ~DynamicFlag.REFERENCED
+    }
+    let hasDynamicChild = false
+    for (const child of dynamic.children) {
+      updateDynamic(child, plan, offset, shift)
+      hasDynamicChild ||= !!(
+        child.flags & (DynamicFlag.REFERENCED | DynamicFlag.INSERT) ||
+        child.template !== undefined ||
+        child.operation !== undefined ||
+        child.hasDynamicChild
+      )
+    }
+    if (dynamic.hasDynamicChild) dynamic.hasDynamicChild = hasDynamicChild
   }
 
   function intern(entry: IRTemplate): number {
-    const key = JSON.stringify([
-      entry.ns,
-      entry.root,
-      entry.static,
-      entry.content,
-    ])
+    const key = `${entry.ns}:${+entry.root}:${+entry.static}:${entry.content}`
     let index = indices.get(key)
     if (index === undefined) {
       indices.set(key, (index = entries.length))
@@ -238,6 +262,30 @@ export function compileTimeComputation(ir: RootIRNode): void {
     }
     return index
   }
+}
+
+function computeText(operation: SetTextIRNode): string | undefined {
+  let computed = false
+  let text: string | undefined = ''
+  for (let i = 0; i < operation.values.length; i++) {
+    const exp = operation.values[i]
+    let literal = getLiteralExpressionValue(exp)
+    if (literal === null && exp.ast) {
+      const value = evaluateConstant(exp.ast)
+      // HTML parsing normalizes CR/NUL and strips a leading LF in pre/textarea.
+      if (value !== undefined && !/[\r\n\0]/.test(String(value))) {
+        if (!computed) operation.values = operation.values.slice()
+        computed = true
+        literal = String(value)
+        operation.values[i] = createSimpleExpression(literal, true, exp.loc)
+      }
+    }
+    if (literal === null) text = undefined
+    else if (text !== undefined) text += literal
+  }
+  return computed && text !== undefined && !/[\r\n\0]/.test(text)
+    ? text
+    : undefined
 }
 
 function getShift(edits: TemplateEdit[], position: number): number {
@@ -251,42 +299,37 @@ function getShift(edits: TemplateEdit[], position: number): number {
   return low ? edits[low - 1].delta! : 0
 }
 
-function pruneReferences(dynamic: IRDynamicInfo): void {
-  for (const child of dynamic.children) pruneReferences(child)
-  if (dynamic.hasDynamicChild) {
-    dynamic.hasDynamicChild = dynamic.children.some(
-      child =>
-        child.flags & (DynamicFlag.REFERENCED | DynamicFlag.INSERT) ||
-        child.template !== undefined ||
-        child.operation !== undefined ||
-        child.hasDynamicChild,
-    )
-  }
-}
-
-function blockOperations(block: BlockIRNode): Set<OperationNode> {
-  const operations = new Set(block.operation)
-  for (const effect of block.effect) {
-    for (const operation of effect.operations) operations.add(operation)
-  }
-  visit(block.dynamic)
-  return operations
-
-  function visit(dynamic: IRDynamicInfo) {
-    if (dynamic.operation) operations.add(dynamic.operation)
-    for (const child of dynamic.children) visit(child)
-  }
-}
-
-function collectBlocks(root: BlockIRNode): BlockIRNode[] {
-  const blocks = new Set<BlockIRNode>()
+function collectBlocks(root: BlockIRNode): BlockData[] {
+  const blocks = new Map<BlockIRNode, BlockData>()
   visitBlock(root)
-  return [...blocks]
+  return [...blocks.values()]
 
   function visitBlock(block: BlockIRNode) {
     if (blocks.has(block)) return
-    blocks.add(block)
-    for (const operation of blockOperations(block)) visitOperation(operation)
+    const data: BlockData = {
+      block,
+      operations: new Set(block.operation),
+      boundaries: [],
+      texts: new Map(),
+      changed: false,
+    }
+    blocks.set(block, data)
+    for (const effect of block.effect) {
+      for (const operation of effect.operations) data.operations.add(operation)
+    }
+    visitDynamic(block.dynamic, data.operations)
+    for (const operation of data.operations) {
+      if (isBlockOperation(operation)) data.boundaries.push(operation)
+      visitOperation(operation)
+    }
+  }
+
+  function visitDynamic(
+    dynamic: IRDynamicInfo,
+    operations: Set<OperationNode>,
+  ) {
+    if (dynamic.operation) operations.add(dynamic.operation)
+    for (const child of dynamic.children) visitDynamic(child, operations)
   }
 
   function visitOperation(operation: OperationNode) {

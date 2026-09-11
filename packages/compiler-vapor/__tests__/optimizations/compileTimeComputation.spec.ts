@@ -161,6 +161,10 @@ describe('compile time computation', () => {
 
   test.each([
     ['1 + 2', '3'],
+    ['1 + 2 + 3', '6'],
+    ['(2 + 3) * 4', '20'],
+    ['0.1 + 0.2 + 0.3', '0.6000000000000001'],
+    ['0.1 + (0.2 + 0.3)', '0.6'],
     ["'hello' + ' world'", 'hello world'],
     ["1 + 2 + '3'", '33'],
     ["'1' + 2 + 3", '123'],
@@ -184,6 +188,7 @@ describe('compile time computation', () => {
 
   test.each([
     'value + 1',
+    'value + (2 + 3)',
     'value.current + 1',
     'getValue() + 1',
     '1n + 2',
@@ -200,6 +205,29 @@ describe('compile time computation', () => {
     )
     expect(helpers).toContain('setText')
     expect(code).toContain(expression)
+  })
+
+  test('folds adjacent constants while keeping the dynamic text effect', () => {
+    const ir = lower('<div>{{ 1 + 2 }}{{ value }}{{ (2 + 3) * 4 }}</div>')
+    optimize(ir)
+    expect(ir.template.keys()).toEqual(['<div> '])
+    expect(ir.block.operation).toMatchObject([
+      { type: IRNodeTypes.GET_TEXT_CHILD },
+    ])
+    expect(ir.block.effect).toHaveLength(1)
+    expect(ir.block.effect[0].operations).toMatchObject([
+      {
+        type: IRNodeTypes.SET_TEXT,
+        values: [
+          { content: '3', isStatic: true },
+          { content: 'value', isStatic: false },
+          { content: '20', isStatic: true },
+        ],
+      },
+    ])
+    expect(generate(ir, { prefixIdentifiers: true }).helpers).toContain(
+      'setText',
+    )
   })
 
   test('concatenates adjacent folded interpolations as text', () => {
