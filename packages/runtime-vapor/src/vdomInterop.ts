@@ -1469,6 +1469,13 @@ function createVDOMComponent(
     if (!transition) removeDom(parentNode)
   }
 
+  // Insertion can happen after the row/branch scope has been restored.
+  // Capture ownership while creating the fragment, including native parents
+  // whose DOM removal does not traverse nested component fragments.
+  onScopeDispose(() => {
+    if (vnode.component) unmount()
+  }, true)
+
   frag.hydrate = () => {
     if (!isHydrating) return
     hydrateVNode(vnode, parentComponent as any, frag.slotScopeIds)

@@ -40,6 +40,7 @@ import {
 import { VaporDynamicComponentFlags, VaporSlotFlags } from '@vue/shared'
 import { VaporSlot } from '../../runtime-core/src/vnode'
 import { compile, makeInteropRender, renderParity } from './_utils'
+import { testHydration } from './hydration/_helpers'
 import { type DynamicFragment, isInteropFragment } from '../src/fragment'
 import {
   type VaporComponentInstance,
@@ -7349,6 +7350,69 @@ describe('vdomInterop', () => {
       button.click()
       expect(onStatic).toHaveBeenCalledTimes(1)
       expect(onObject).toHaveBeenCalledTimes(1)
+    },
+  )
+
+  test.each([false, true])(
+    'disposes VDOM children inside native elements on app unmount (hydration: %s)',
+    async hydration => {
+      const read = vi.fn()
+      const dispose = vi.fn()
+      const unmounted = vi.fn()
+      const data = ref({ value: 'a', read, dispose, unmounted })
+      const child = `<script setup>
+        import { watchEffect, onScopeDispose, onUnmounted } from 'vue'
+        const data = _data
+        watchEffect(() => data.value.read(data.value.value))
+        onScopeDispose(data.value.dispose)
+        onUnmounted(data.value.unmounted)
+        </script><template><span>{{ data.value }}</span></template>`
+      const parent = `<script setup>const Child = _components.Child</script><template><main><Child/></main></template>`
+      let app
+      let container: HTMLDivElement
+      if (hydration) {
+        ;({ app, container } = await testHydration(
+          parent,
+          { Child: { code: child, vapor: false } },
+          data,
+          {
+            interop: true,
+            compilerOptions: { optLevel: 0 },
+            beforeHydrate: () => {
+              read.mockClear()
+              dispose.mockClear()
+              unmounted.mockClear()
+            },
+          },
+        ))
+      } else {
+        const Child = compile(child, data, {}, { vapor: false })
+        const Parent = compile(
+          parent,
+          data,
+          { Child },
+          { compilerOptions: { optLevel: 0 } },
+        )
+        app = createVaporApp(Parent).use(vaporInteropPlugin)
+        container = document.createElement('div')
+        app.mount(container)
+      }
+      const span = container.querySelector('span')!
+      expect(span.textContent).toBe('a')
+      expect(read.mock.calls).toEqual([['a']])
+      expect(dispose).not.toHaveBeenCalled()
+      expect(unmounted).not.toHaveBeenCalled()
+      app.unmount()
+      await nextTick()
+      data.value.value = 'b'
+      await nextTick()
+      // Check the detached node and effects as well as the now-empty host.
+      expect(read.mock.calls).toEqual([['a']])
+      expect(span.textContent).toBe('a')
+      expect(dispose).toHaveBeenCalledTimes(1)
+      expect(unmounted).toHaveBeenCalledTimes(1)
+      expect(container.innerHTML).toBe('')
+      container.remove()
     },
   )
 })

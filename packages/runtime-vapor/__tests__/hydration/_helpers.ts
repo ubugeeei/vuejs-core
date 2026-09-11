@@ -118,10 +118,12 @@ export async function testHydration(
     isVaporApp = true,
     interop = false,
     compilerOptions,
+    beforeHydrate,
   }: {
     isVaporApp?: boolean
     interop?: boolean
     compilerOptions?: OptimizationOptions
+    beforeHydrate?: (container: HTMLDivElement) => void
   } = {},
 ): Promise<HydrationTestContext> {
   const ssrComponents: any = {}
@@ -168,6 +170,7 @@ export async function testHydration(
     app.use(runtimeVapor.vaporInteropPlugin)
   }
 
+  beforeHydrate?.(container)
   app.mount(container)
   return { data, container, html, app }
 }
