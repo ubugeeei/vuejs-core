@@ -313,15 +313,47 @@ describe('constant expression branches', () => {
 })
 
 test('preserves signed zero and parenthesized constant ranges across repeated optimization', () => {
-  for (const content of [
-    '(true ? (-0) : fail())',
-    '/* result -0 */ ((2 - 3) * 0)',
-    '(((2 + 3) * -4))',
-  ]) {
+  for (const [content, expected] of [
+    ['(true ? (-0) : fail())', -0],
+    ['/* result -0 */ ((2 - 3) * 0)', -0],
+    ['(((2 + 3) * -4))', -20],
+  ] as const) {
     const expression = createSimpleExpression(content)
     expression.ast = parseExpression(`(${content})`)
     const folded = foldExpression(expression, {})
-    expect(getConstantValue(folded)).toBe(getConstantValue(expression))
+    expect(getConstantValue(folded)).toBe(expected)
+    expect(new Function(`return (${folded.content})`)()).toBe(expected)
     expect(foldExpression(folded, {}).content).toBe(folded.content)
   }
 })
+
+test.each([false, true])(
+  'maps every surviving identifier through nested edits (TypeScript: %s)',
+  typescript => {
+    const source = `<div>{{ ('🦊' + 'x') + (2 +\n3) + first }}{{ true ? (false || second${typescript ? ' as string' : ''}) : discarded }}{{ null ?? third }}{{ obj.x + obj.x + (3 + 4) + fourth }}</div>`
+    const { code, map } = compile(source, {
+      prefixIdentifiers: true,
+      optLevel: 2,
+      sourceMap: true,
+      filename: 'Unicode.vue',
+      expressionPlugins: typescript ? ['typescript'] : [],
+    })
+    const position = (text: string, offset: number) => {
+      const lines = text.slice(0, offset).split('\n')
+      return { line: lines.length, column: lines[lines.length - 1].length }
+    }
+    const consumer = new SourceMapConsumer(map!)
+    expect(code).not.toContain('discarded')
+    for (const name of ['first', 'second', 'third', 'fourth']) {
+      const matches = [...code.matchAll(new RegExp(`\\b${name}\\b`, 'g'))]
+      expect(matches).toHaveLength(1)
+      expect(
+        consumer.originalPositionFor(position(code, matches[0].index)),
+      ).toEqual({
+        ...position(source, source.indexOf(name)),
+        source: 'Unicode.vue',
+        name,
+      })
+    }
+  },
+)
