@@ -1,7 +1,11 @@
+import { VaporIfFlags } from '@vue/shared'
 import {
+  type BlockIRNode,
   DynamicFlag,
   type IRDynamicInfo,
+  IRNodeTypes,
   type IRTemplate,
+  type IfIRNode,
   type RootIRNode,
 } from '../ir'
 import type { BlockAnalysis } from './analysis'
@@ -53,10 +57,7 @@ export function optimizeTemplates(
     if (!group) return
     for (const owner of group) {
       const isStatic =
-        entry.static ||
-        // Hydrated roots may carry fallthrough attrs. Caching their adopted DOM
-        // would leak the first instance's attrs into later CSR clones.
-        !!(!entry.root && owner.staticTemplateEligible && !mutable.has(owner))
+        entry.static || !!(owner.staticTemplateEligible && !mutable.has(owner))
       const key = `${entry.ns}:${+entry.root}:${+isStatic}:${entry.content}`
       let replacement = indices.get(key)
       if (replacement === undefined) {
@@ -70,4 +71,37 @@ export function optimizeTemplates(
     }
   })
   ir.template.entries = entries
+  // Only root-block branches may reuse the enclosing scope, matching v-if
+  // lowering. Nested branches remain owned by their enclosing branch scope.
+  for (const operation of blocks[0].operations) {
+    if (operation.type === IRNodeTypes.IF) planBranchScope(operation)
+  }
+
+  function planBranchScope(operation: IfIRNode): void {
+    if (isStaticBlock(operation.positive))
+      operation.blockShape |= VaporIfFlags.TRUE_NO_SCOPE
+    const negative = operation.negative
+    if (negative?.type === IRNodeTypes.IF) planBranchScope(negative)
+    else if (negative && isStaticBlock(negative))
+      operation.blockShape |= VaporIfFlags.FALSE_NO_SCOPE
+  }
+
+  function isStaticBlock(block: BlockIRNode): boolean {
+    return (
+      !block.operation.length &&
+      !block.effect.length &&
+      block.returns.length > 0 &&
+      block.dynamic.children.length === block.returns.length &&
+      block.dynamic.children.every(
+        child =>
+          child.id !== undefined &&
+          block.returns.includes(child.id) &&
+          child.template !== undefined &&
+          entries[child.template].static &&
+          !child.operation &&
+          !child.hasDynamicChild &&
+          !(child.flags & (DynamicFlag.INSERT | DynamicFlag.NON_TEMPLATE)),
+      )
+    )
+  }
 }

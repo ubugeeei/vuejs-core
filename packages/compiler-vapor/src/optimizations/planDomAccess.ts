@@ -7,20 +7,22 @@ export function planDomAccess(blocks: BlockAnalysis[]): void {
   for (const { dynamics } of blocks) {
     for (let i = dynamics.length - 1; i >= 0; i--) {
       const dynamic = dynamics[i]
-      let offset = 0
-      const indices = dynamic.children.map((child, index) => {
-        if (child.flags & DynamicFlag.NON_TEMPLATE) offset--
-        return index + offset
-      })
+      let elementIndex = dynamic.children.length - 1
+      for (const child of dynamic.children) {
+        if (child.flags & DynamicFlag.NON_TEMPLATE) elementIndex--
+      }
       let next: number | undefined
       for (let j = dynamic.children.length - 1; j >= 0; j--) {
         const child = dynamic.children[j]
         child.domAccess!.adjacent =
-          next !== undefined && next - indices[j] === 1
-        if (child.flags & DynamicFlag.INSERT && child.anchor === undefined)
-          continue
-        if (child.flags & DynamicFlag.REFERENCED || child.hasDynamicChild)
-          next = indices[j]
+          next !== undefined && next - elementIndex === 1
+        if (
+          !(child.flags & DynamicFlag.INSERT && child.anchor === undefined) &&
+          (child.flags & DynamicFlag.REFERENCED || child.hasDynamicChild)
+        ) {
+          next = elementIndex
+        }
+        if (!(child.flags & DynamicFlag.NON_TEMPLATE)) elementIndex--
       }
       dynamic.domAccess = {
         inline:

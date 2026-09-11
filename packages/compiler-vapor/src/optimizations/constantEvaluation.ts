@@ -139,8 +139,19 @@ export function foldExpression(
   options: OptimizationOptions,
 ): SimpleExpressionNode {
   if (expression.isStatic || !expression.ast) return expression
+  switch (unwrapTSNode(expression.ast).type) {
+    case 'BinaryExpression':
+    case 'LogicalExpression':
+    case 'UnaryExpression':
+    case 'ConditionalExpression':
+    case 'ParenthesizedExpression':
+      break
+    default:
+      return expression
+  }
   const cache = new Map<Node, ConstantValue | undefined>()
   const edits: { start: number; end: number; content: string }[] = []
+  const constant = evaluateConstant(expression.ast, cache)
   visit(expression.ast)
   if (!edits.length) return expression
   let content = expression.content
@@ -157,9 +168,43 @@ export function foldExpression(
     expression.constType,
   )
   mapExpressionEdits(expression, result, edits, options.sourceMap)
-  result.ast = parseExpression(`(${content})`, {
-    plugins: options.expressionPlugins,
-  })
+  if (constant !== undefined) {
+    // A computed primitive contains no identifiers. Construct its small AST
+    // directly instead of invoking the parser again for every folded value.
+    const start = edits[0].start + 1
+    const range = { start, end: start + serializeConstant(constant).length }
+    switch (typeof constant) {
+      case 'string':
+        result.ast = { type: 'StringLiteral', value: constant, ...range }
+        break
+      case 'boolean':
+        result.ast = { type: 'BooleanLiteral', value: constant, ...range }
+        break
+      case 'number':
+        result.ast =
+          constant < 0 || Object.is(constant, -0)
+            ? {
+                type: 'UnaryExpression',
+                operator: '-',
+                prefix: true,
+                ...range,
+                argument: {
+                  type: 'NumericLiteral',
+                  value: -constant,
+                  start: start + 1,
+                  end: range.end,
+                },
+              }
+            : { type: 'NumericLiteral', value: constant, ...range }
+        break
+      default:
+        result.ast = { type: 'NullLiteral', ...range }
+    }
+  } else {
+    result.ast = parseExpression(`(${content})`, {
+      plugins: options.expressionPlugins,
+    })
+  }
   return result
 
   function visit(node: Node): void {
@@ -181,23 +226,56 @@ export function foldExpression(
     }
     switch (node.type) {
       case 'BinaryExpression':
-      case 'LogicalExpression':
         visit(node.left)
         visit(node.right)
         break
+      case 'LogicalExpression': {
+        const left = evaluateConstant(node.left, cache)
+        if (left !== undefined) select(node, node.right)
+        else {
+          visit(node.left)
+          visit(node.right)
+        }
+        break
+      }
       case 'UnaryExpression':
         visit(node.argument)
         break
-      case 'ConditionalExpression':
-        visit(node.test)
-        visit(node.consequent)
-        visit(node.alternate)
+      case 'ConditionalExpression': {
+        const test = evaluateConstant(node.test, cache)
+        if (test !== undefined)
+          select(node, test ? node.consequent : node.alternate)
+        else {
+          visit(node.test)
+          visit(node.consequent)
+          visit(node.alternate)
+        }
         break
+      }
       default: {
         const unwrapped = unwrapTSNode(node)
         if (unwrapped !== node) visit(unwrapped)
         else if (node.type === 'ParenthesizedExpression') visit(node.expression)
       }
     }
+  }
+
+  function select(node: Node, selected: Node): void {
+    if (
+      node.start == null ||
+      node.end == null ||
+      selected.start == null ||
+      selected.end == null
+    )
+      return
+    // Conditional/logical expressions yield a value, not a Reference. Keep
+    // GetValue so `delete` and `typeof` cannot acquire different semantics.
+    edits.push({
+      start: node.start - 1,
+      end: selected.start - 1,
+      content: '(0, ',
+    })
+    visit(selected)
+    edits.push({ start: selected.end - 1, end: node.end - 1, content: ')' })
   }
 }

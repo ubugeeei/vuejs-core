@@ -1,36 +1,26 @@
 import { createSimpleExpression } from '@vue/compiler-dom'
-import { IRNodeTypes } from '../ir'
+import type { SetTextIRNode } from '../ir'
 import { getLiteralExpressionValue } from '../utils'
-import type { BlockAnalysis } from './analysis'
 
-export function combineText(blocks: BlockAnalysis[]): void {
-  for (const { operations } of blocks) {
-    for (const operation of operations) {
-      if (
-        operation.type !== IRNodeTypes.SET_TEXT ||
-        operation.values.length < 2
+export function combineText(operation: SetTextIRNode): void {
+  let values: typeof operation.values | undefined
+  let previous: string | null = null
+  for (let i = 0; i < operation.values.length; i++) {
+    const value = operation.values[i]
+    const literal = getLiteralExpressionValue(value)
+    if (literal !== null && previous !== null) {
+      values ||= operation.values.slice(0, i)
+      const first = values[values.length - 1]
+      values[values.length - 1] = createSimpleExpression(
+        previous + literal,
+        true,
+        first.loc,
       )
-        continue
-      const values: typeof operation.values = []
-      let text: string | undefined
-      let first: (typeof values)[number] | undefined
-      const flush = () => {
-        if (first) values.push(createSimpleExpression(text!, true, first.loc))
-        first = undefined
-        text = undefined
-      }
-      for (const value of operation.values) {
-        const literal = getLiteralExpressionValue(value)
-        if (literal === null) {
-          flush()
-          values.push(value)
-        } else {
-          first ||= value
-          text = (text || '') + literal
-        }
-      }
-      flush()
-      if (values.length < operation.values.length) operation.values = values
+      previous += literal
+    } else {
+      if (values) values.push(value)
+      previous = literal
     }
   }
+  if (values) operation.values = values
 }

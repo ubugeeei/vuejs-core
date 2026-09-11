@@ -15,6 +15,7 @@ import {
 import { getLiteralExpressionValue } from '../utils'
 import { type BlockAnalysis, collectBlocks } from './analysis'
 import { getConstantValue } from './constantEvaluation'
+import { combineText } from './combineText'
 
 interface TemplateEdit {
   offset: number
@@ -28,11 +29,6 @@ interface TemplatePlan {
   edits: TemplateEdit[]
 }
 
-interface BlockData extends BlockAnalysis {
-  texts: Map<number, { operation: SetTextIRNode; text: string }>
-  changed: boolean
-}
-
 // The first computation rule consumes SET_TEXT operands. Other consumers need
 // their own serialization rules: a numeric prop must remain a number, for example.
 export function compileTimeComputation(
@@ -40,19 +36,19 @@ export function compileTimeComputation(
   analysis: BlockAnalysis[] = collectBlocks(ir.block),
   computed?: Set<SimpleExpressionNode>,
 ): void {
-  const blocks: BlockData[] = analysis.map(block => ({
-    ...block,
-    texts: new Map(),
-    changed: false,
-  }))
-  let hasStaticText = false
-  for (const { block, texts } of blocks) {
+  let texts:
+    | Map<
+        BlockAnalysis,
+        Map<number, { operation: SetTextIRNode; text: string }>
+      >
+    | undefined
+  const changed = new Set<BlockAnalysis>()
+  for (const data of analysis) {
+    const { block } = data
     for (const operation of block.operation) {
-      if (operation.type !== IRNodeTypes.SET_TEXT) continue
-      const text = computeText(operation, computed)
-      if (text !== undefined) {
-        texts.set(operation.element, { operation, text })
-        hasStaticText = true
+      if (operation.type === IRNodeTypes.SET_TEXT) {
+        compute(operation, data)
+        if (operation.values.length > 1) combineText(operation)
       }
     }
     for (const effect of block.effect) {
@@ -62,7 +58,7 @@ export function compileTimeComputation(
       for (const operation of effect.operations) {
         if (operation.type !== IRNodeTypes.SET_TEXT) continue
         const values = operation.values
-        computeText(operation, computed)
+        compute(operation, data)
         if (values !== operation.values) {
           replacements ||= new Map()
           for (let i = 0; i < values.length; i++) {
@@ -71,6 +67,7 @@ export function compileTimeComputation(
             }
           }
         }
+        if (operation.values.length > 1) combineText(operation)
       }
       if (replacements) {
         effect.expressions = effect.expressions.map(
@@ -81,20 +78,21 @@ export function compileTimeComputation(
   }
   // Most templates have no computable text. Avoid indexing templates and DOM
   // positions until a computation can actually remove a text operation.
-  if (!hasStaticText) return
+  if (!texts) return
 
   const templates = new Map<number, TemplatePlan[]>()
   const plans = new Map<IRDynamicInfo, TemplatePlan>()
   const removed = new Set<OperationNode>()
   const candidates = new Set<number>()
-  for (const data of blocks) planTemplate(data.block.dynamic, data)
+  for (const data of analysis) planTemplate(data.block.dynamic, data)
   if (!removed.size) return
 
   const references = new Set<number>()
-  for (const { block, operations, boundaries, changed } of blocks) {
-    if (changed) {
+  for (const data of analysis) {
+    const { block, operations, boundaries } = data
+    if (changed.has(data)) {
       const textChildren = new Set<number>()
-      for (const op of block.operation) {
+      for (const op of operations) {
         if (
           removed.has(op) &&
           op.type === IRNodeTypes.SET_TEXT &&
@@ -129,9 +127,24 @@ export function compileTimeComputation(
         if (prefix) prefix.push(length)
       }
       block.operation.length = length
+      const effectPrefix = boundaries.length ? [0] : undefined
+      let effectLength = 0
+      for (const effect of block.effect) {
+        let length = 0
+        for (const operation of effect.operations) {
+          if (!removed.has(operation)) effect.operations[length++] = operation
+        }
+        effect.operations.length = length
+        if (length) block.effect[effectLength++] = effect
+        if (effectPrefix) effectPrefix.push(effectLength)
+      }
+      block.effect.length = effectLength
       for (const op of boundaries) {
         if (op.operationIndex !== undefined) {
           op.operationIndex = prefix![op.operationIndex]
+        }
+        if (op.effectIndex !== undefined) {
+          op.effectIndex = effectPrefix![op.effectIndex]
         }
       }
     }
@@ -179,11 +192,20 @@ export function compileTimeComputation(
     }
   })
   ir.template.entries = entries
-  for (const { block } of blocks) updateDynamic(block.dynamic)
+  for (const { block } of analysis) updateDynamic(block.dynamic)
+
+  function compute(operation: SetTextIRNode, data: BlockAnalysis): void {
+    const text = computeText(operation, computed)
+    if (text === undefined) return
+    texts ||= new Map()
+    let blockTexts = texts.get(data)
+    if (!blockTexts) texts.set(data, (blockTexts = new Map()))
+    blockTexts.set(operation.element, { operation, text })
+  }
 
   function planTemplate(
     dynamic: IRDynamicInfo,
-    data: BlockData,
+    data: BlockAnalysis,
     plan?: TemplatePlan,
     parentOffset = 0,
   ): void {
@@ -199,7 +221,8 @@ export function compileTimeComputation(
     } else {
       plan = undefined
     }
-    const computed = dynamic.id !== undefined && data.texts.get(dynamic.id)
+    const computed =
+      dynamic.id !== undefined && texts!.get(data)?.get(dynamic.id)
     if (plan && computed) {
       const { operation, text } = computed
       let edit: TemplateEdit | undefined
@@ -228,7 +251,7 @@ export function compileTimeComputation(
         plan.edits.push(edit)
         removed.add(operation)
         candidates.add(operation.element)
-        data.changed = true
+        changed.add(data)
       }
     }
     for (const child of dynamic.children)

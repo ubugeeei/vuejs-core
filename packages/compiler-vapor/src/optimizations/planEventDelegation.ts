@@ -5,15 +5,17 @@ import type { BlockAnalysis } from './analysis'
 // Plan attachment once per block instead of searching all listeners per event.
 export function planEventDelegation(blocks: BlockAnalysis[]): void {
   for (const { block } of blocks) {
-    const groups = new Map<string, SetEventIRNode[]>()
+    let groups: Map<string, SetEventIRNode[]> | undefined
     for (const operation of block.operation) {
       if (operation.type !== IRNodeTypes.SET_EVENT || !operation.delegate)
         continue
+      groups ||= new Map()
       const key = `${operation.element}:${operation.key.content}`
       const group = groups.get(key)
       if (group) group.push(operation)
       else groups.set(key, [operation])
     }
+    if (!groups) continue
     for (const group of groups.values()) {
       for (const operation of group)
         operation.delegateDirect = group.length === 1

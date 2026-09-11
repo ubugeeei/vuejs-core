@@ -11,6 +11,7 @@ import { optimize } from '../../src/optimize'
 import { generate } from '../../src/generate'
 import { compile } from '../../src/compile'
 import { IRNodeTypes } from '../../src/ir'
+import { VaporIfFlags } from '@vue/shared'
 
 function textOperation(source: string, optLevel: 0 | 1 | 2 = 1) {
   const { ast } = compile(source, { prefixIdentifiers: true, optLevel })
@@ -89,7 +90,6 @@ describe('IR optimizer', () => {
       '<custom-element>{{ 1 + 2 }}</custom-element><footer/>',
       '<template>{{ 1 + 2 }}</template><footer/>',
       '<div :title="value">{{ 1 + 2 }}</div><footer/>',
-      '<div>{{ 1 + 2 }}</div>',
     ]) {
       const { ast } = compile(source, {
         prefixIdentifiers: true,
@@ -208,4 +208,120 @@ describe('IR optimizer', () => {
     optimize(ast, { optLevel: 2 })
     expect(generate(ast, { prefixIdentifiers: true }).code).toBe(code)
   })
+})
+
+describe('computed effect elimination', () => {
+  test.each([1, 2] as const)(
+    'embeds short-circuited text at level %s',
+    optLevel => {
+      const { ast, code, helpers } = compile(
+        '<main><i>{{ false && fail() }}</i><Comp/><b>{{ true ? 20 : value }}</b><Comp/><u>{{ label }}</u></main>',
+        { prefixIdentifiers: true, optLevel },
+      )
+      expect(ast.template.keys().join('')).toContain('<i>false</i>')
+      expect(ast.template.keys().join('')).toContain('<b>20</b>')
+      expect(code).not.toContain('fail')
+      expect(code).not.toContain('_ctx.value')
+      expect(code.match(/_renderEffect\(/g)).toHaveLength(1)
+      expect(helpers).toContain('setText')
+      const lastComponent = code.lastIndexOf('_createComponentWithFallback(')
+      expect(lastComponent).toBeGreaterThanOrEqual(0)
+      expect(lastComponent).toBeLessThan(code.indexOf('_renderEffect('))
+    },
+  )
+  test.each([1, 2] as const)(
+    'removes an entirely computed text effect at level %s',
+    optLevel => {
+      const { code, helpers } = compile('<div>{{ true ? 20 : fail() }}</div>', {
+        prefixIdentifiers: true,
+        optLevel,
+      })
+      expect(code).toContain('<div>20')
+      expect(helpers).not.toContain('renderEffect')
+      expect(helpers).not.toContain('setText')
+      expect(helpers).not.toContain('txt')
+    },
+  )
+})
+
+describe('static branch scopes', () => {
+  test('reuses the enclosing scope for branches made entirely static', () => {
+    const { ast } = compile(
+      '<main><div v-if="ok">{{ 2 + 3 }}</div><i v-else>{{ false && fail() }}</i></main>',
+      { prefixIdentifiers: true, optLevel: 2 },
+    )
+    const branch = ast.block.dynamic.children[0].children[0].operation!
+    expect(branch.type).toBe(IRNodeTypes.IF)
+    if (branch.type !== IRNodeTypes.IF) return
+    expect(branch.blockShape & VaporIfFlags.TRUE_NO_SCOPE).toBeTruthy()
+    expect(branch.blockShape & VaporIfFlags.FALSE_NO_SCOPE).toBeTruthy()
+    expect(branch.once).toBe(false)
+  })
+  test.each([
+    '<div>{{ value }}</div>',
+    '<Comp/>',
+    '<div ref="target">{{ 2 + 3 }}</div>',
+    '<div v-custom>{{ 2 + 3 }}</div>',
+  ])('retains scopes for owned work in %s', child => {
+    const { ast } = compile(`<template v-if="ok">${child}</template>`, {
+      prefixIdentifiers: true,
+      optLevel: 2,
+    })
+    const branch = ast.block.dynamic.children[0].operation!
+    if (branch.type !== IRNodeTypes.IF) throw new Error('Expected branch')
+    expect(branch.blockShape & VaporIfFlags.TRUE_NO_SCOPE).toBe(0)
+  })
+})
+
+describe('constant expression branches', () => {
+  test.each([
+    ['true ? value : fail()', '(0, value)'],
+    ['false ? fail() : value', '(0, value)'],
+    ['true && value', '(0, value)'],
+    ['false || value', '(0, value)'],
+    ['null ?? value', '(0, value)'],
+    ['typeof (true ? missing : value)', 'typeof ((0, missing))'],
+    ['delete (true ? object.value : other)', 'delete ((0, object.value))'],
+  ])(
+    'removes unreachable operands while preserving GetValue in %s',
+    (content, expected) => {
+      const expression = createSimpleExpression(content)
+      expression.ast = parseExpression(`(${content})`)
+      expect(foldExpression(expression, {}).content).toBe(expected)
+    },
+  )
+  test.each([
+    'true ? value : fail()',
+    'false || value',
+    'typeof (true ? missing : value)',
+  ])('preserves source locations in %s', expression => {
+    const source = `<div>{{ ${expression} }}</div>`
+    const { code, map } = compile(source, {
+      prefixIdentifiers: true,
+      optLevel: 2,
+      sourceMap: true,
+    })
+    const name = expression.includes('missing') ? 'missing' : 'value'
+    const prefix = code.slice(0, code.lastIndexOf(name)).split('\n')
+    expect(
+      new SourceMapConsumer(map!).originalPositionFor({
+        line: prefix.length,
+        column: prefix[prefix.length - 1].length,
+      }),
+    ).toMatchObject({ line: 1, column: source.indexOf(name) })
+  })
+})
+
+test('preserves signed zero and parenthesized constant ranges across repeated optimization', () => {
+  for (const content of [
+    '(true ? (-0) : fail())',
+    '/* result -0 */ ((2 - 3) * 0)',
+    '(((2 + 3) * -4))',
+  ]) {
+    const expression = createSimpleExpression(content)
+    expression.ast = parseExpression(`(${content})`)
+    const folded = foldExpression(expression, {})
+    expect(getConstantValue(folded)).toBe(getConstantValue(expression))
+    expect(foldExpression(folded, {}).content).toBe(folded.content)
+  }
 })

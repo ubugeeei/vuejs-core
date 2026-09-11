@@ -23,8 +23,10 @@ export function planExpressionCaches(
   blocks: BlockAnalysis[],
   options: OptimizationOptions,
 ): void {
-  for (const { block, boundaries } of blocks) {
-    if (!block.effect.length) continue
+  for (const { block, boundaries, deferExpressionCache } of blocks) {
+    // Keyed v-for selects effects during codegen. Avoid analyzing the full
+    // range here only to discard it and analyze the selected range again.
+    if (!block.effect.length || deferExpressionCache) continue
     const ends = new Set<number>([block.effect.length])
     for (const boundary of boundaries) {
       if (boundary.effectIndex) ends.add(boundary.effectIndex)
@@ -88,6 +90,24 @@ export function createExpressionCachePlan(
     SimpleExpressionNode,
     SimpleExpressionNode
   >()
+  // Simple identifiers cannot contain repeated subexpressions or writes.
+  // Preserve declaration order without allocating AST usage records and ranges.
+  if (expressions.every(exp => exp.ast === null && !exp.isStatic)) {
+    const counts = new Map<string, number>()
+    for (const exp of expressions)
+      counts.set(exp.content, (counts.get(exp.content) || 0) + 1)
+    const declarations: DeclarationValue[] = []
+    for (const [name, count] of counts) {
+      if (count > 1 && !isGloballyAllowed(name)) {
+        declarations.push({
+          name,
+          isIdentifier: true,
+          value: extend({ ast: null }, createSimpleExpression(name)),
+        })
+      }
+    }
+    return { declarations, expressionReplacements }
+  }
   // analyze variables
   const {
     seenVariable,

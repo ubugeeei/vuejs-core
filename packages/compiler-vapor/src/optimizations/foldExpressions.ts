@@ -18,6 +18,7 @@ export function foldExpressions(
   const computed = new Set<SimpleExpressionNode>()
   const replacements = new Map<SimpleExpressionNode, SimpleExpressionNode>()
   const fold = (expression: SimpleExpressionNode) => {
+    if (expression.isStatic || !expression.ast) return expression
     let result = replacements.get(expression)
     if (!result) {
       replacements.set(
@@ -28,9 +29,20 @@ export function foldExpressions(
     }
     return result
   }
+  const foldValues = (values: SimpleExpressionNode[]) => {
+    let result = values
+    for (let i = 0; i < values.length; i++) {
+      const value = fold(values[i])
+      if (value !== values[i]) {
+        if (result === values) result = values.slice()
+        result[i] = value
+      }
+    }
+    return result
+  }
   const prop = (prop: IRProp) => {
     prop.key = fold(prop.key)
-    if (!prop.handler) prop.values = prop.values.map(fold)
+    if (!prop.handler) prop.values = foldValues(prop.values)
   }
   const props = (values: IRProps[]) => {
     for (const value of values) {
@@ -57,11 +69,11 @@ export function foldExpressions(
   }
   for (const { block, operations } of blocks) {
     for (const effect of block.effect)
-      effect.expressions = effect.expressions.map(fold)
+      effect.expressions = foldValues(effect.expressions)
     for (const operation of operations) {
       switch (operation.type) {
         case IRNodeTypes.SET_TEXT:
-          operation.values = operation.values.map(fold)
+          operation.values = foldValues(operation.values)
           break
         case IRNodeTypes.SET_PROP:
           prop(operation.prop)

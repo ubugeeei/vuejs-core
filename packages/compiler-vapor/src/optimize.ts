@@ -3,7 +3,6 @@ import type { RootIRNode } from './ir'
 import { collectBlocks } from './optimizations/analysis'
 import { planExpressionCaches } from './optimizations/cacheExpressions'
 import { compileTimeComputation } from './optimizations/compileTimeComputation'
-import { combineText } from './optimizations/combineText'
 import { foldExpressions } from './optimizations/foldExpressions'
 import { simplifyControlFlow } from './optimizations/simplifyControlFlow'
 import { optimizeTemplates } from './optimizations/optimizeTemplates'
@@ -49,7 +48,6 @@ export function optimize(
     if (simplifyControlFlow(blocks)) blocks = collectBlocks(ir.block)
   }
   compileTimeComputation(ir, blocks, computed)
-  combineText(blocks)
   if (level > 1) optimizeTemplates(ir, blocks)
   planDomAccess(blocks)
   planEventDelegation(blocks)

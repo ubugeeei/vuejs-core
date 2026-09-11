@@ -14,6 +14,7 @@ export interface BlockAnalysis {
   operations: Set<OperationNode>
   boundaries: InsertionStateTypes[]
   dynamics: IRDynamicInfo[]
+  deferExpressionCache?: boolean
 }
 
 export function collectBlocks(root: BlockIRNode): BlockAnalysis[] {
@@ -21,7 +22,7 @@ export function collectBlocks(root: BlockIRNode): BlockAnalysis[] {
   visitBlock(root)
   return [...blocks.values()]
 
-  function visitBlock(block: BlockIRNode) {
+  function visitBlock(block: BlockIRNode, deferExpressionCache?: boolean) {
     if (blocks.has(block)) return
     const data: BlockAnalysis = {
       block,
@@ -29,6 +30,7 @@ export function collectBlocks(root: BlockIRNode): BlockAnalysis[] {
       boundaries: [],
       dynamics: [],
     }
+    if (deferExpressionCache) data.deferExpressionCache = true
     blocks.set(block, data)
     for (const effect of block.effect) {
       for (const operation of effect.operations) data.operations.add(operation)
@@ -57,7 +59,7 @@ export function collectBlocks(root: BlockIRNode): BlockAnalysis[] {
         }
         break
       case IRNodeTypes.FOR:
-        visitBlock(operation.render)
+        visitBlock(operation.render, !!operation.keyProp)
         break
       case IRNodeTypes.KEY:
         visitBlock(operation.block)
@@ -74,7 +76,7 @@ export function collectBlocks(root: BlockIRNode): BlockAnalysis[] {
   function visitSlot(slot: IRSlots) {
     switch (slot.slotType) {
       case IRSlotType.STATIC:
-        Object.values(slot.slots).forEach(visitBlock)
+        Object.values(slot.slots).forEach(block => visitBlock(block))
         break
       case IRSlotType.DYNAMIC:
       case IRSlotType.LOOP:
