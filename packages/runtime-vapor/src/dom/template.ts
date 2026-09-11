@@ -64,8 +64,10 @@ export function template(html: string, flags: number = 0, ns?: Namespace) {
             validateHydrationTarget(adopted, html)
           }
         }
-        // cache once for post-hydration CSR clones.
-        if (!node) node = adopted.cloneNode(true)
+        // CSR clones must come from the compiled HTML, not adopted DOM that
+        // may contain fallthrough attrs, scope IDs or server-only mutations.
+        // An explicitly stripped template has no HTML to reconstruct.
+        if (!html && !node) node = adopted.cloneNode(true)
         advanceHydrationNode(adopted)
       } else {
         // do not assign `adopted` to `node`, or CSR clones would duplicate children.

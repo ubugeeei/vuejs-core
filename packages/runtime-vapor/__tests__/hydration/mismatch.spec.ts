@@ -969,9 +969,9 @@ describe('mismatch handling', () => {
       expect(container.innerHTML).toBe(`<!--foo--><span>updated</span>`)
     })
 
-    test('repeated adoptions clone the CSR cache only once', async () => {
+    test('repeated adoptions leave the CSR cache based on compiled HTML', async () => {
       const container = document.createElement('div')
-      container.innerHTML = `<span>s</span><span>s</span><span>after</span>`
+      container.innerHTML = `<span class="server" data-scope>s</span><span>s</span><span>after</span>`
       // factory created outside so it can be invoked again after hydration
       const t0 = template('<span>s</span>', 2)
       const msg = ref('after')
@@ -989,10 +989,10 @@ describe('mismatch handling', () => {
         expect(n1).toBe(container.childNodes[1])
         renderEffect(() => setText(x2, msg.value))
       })
-      expect(cloneSpy).toHaveBeenCalledTimes(1)
+      expect(cloneSpy).not.toHaveBeenCalled()
       cloneSpy.mockRestore()
 
-      // post-hydration CSR mount comes from the cached clone and is detached
+      // post-hydration CSR mount comes from the compiled template and is detached
       const csr = t0() as HTMLElement
       expect(csr.outerHTML).toBe('<span>s</span>')
       expect(csr).not.toBe(container.childNodes[0])
@@ -1001,7 +1001,7 @@ describe('mismatch handling', () => {
       msg.value = 'updated'
       await nextTick()
       expect(container.innerHTML).toBe(
-        `<span>s</span><span>s</span><span>updated</span>`,
+        `<span class="server" data-scope="">s</span><span>s</span><span>updated</span>`,
       )
     })
 
