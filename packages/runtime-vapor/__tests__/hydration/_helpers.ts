@@ -1,3 +1,4 @@
+import type { OptimizationOptions } from '@vue/compiler-vapor'
 import { createVaporSSRApp, delegateEvents } from '../../src'
 import type { App } from '@vue/runtime-dom'
 import { ref } from '@vue/runtime-dom'
@@ -116,7 +117,12 @@ export async function testHydration(
   {
     isVaporApp = true,
     interop = false,
-  }: { isVaporApp?: boolean; interop?: boolean } = {},
+    compilerOptions,
+  }: {
+    isVaporApp?: boolean
+    interop?: boolean
+    compilerOptions?: OptimizationOptions
+  } = {},
 ): Promise<HydrationTestContext> {
   const ssrComponents: any = {}
   const clientComponents: any = {}
@@ -127,6 +133,7 @@ export async function testHydration(
     clientComponents[key] = compile(code, data, clientComponents, {
       vapor: isVaporComp,
       ssr: false,
+      compilerOptions,
     })
     ssrComponents[key] = compile(code, data, ssrComponents, {
       vapor: isVaporComp,
@@ -148,6 +155,7 @@ export async function testHydration(
   const clientComp = compile(code, data, clientComponents, {
     vapor: isVaporApp,
     ssr: false,
+    compilerOptions,
   })
   let app
   if (isVaporApp) {

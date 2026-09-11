@@ -183,12 +183,12 @@ export function render(_ctx, $props, $emit, $attrs, $slots) {
 `;
 
 exports[`compile > dynamic root 1`] = `
-"import { toDisplayString as _toDisplayString, setText as _setText, template as _template } from 'vue';
+"import { setText as _setText, template as _template } from 'vue';
 const t0 = _template(" ")
 
 export function render(_ctx) {
   const n0 = t0()
-  _setText(n0, _toDisplayString(1) + _toDisplayString(2))
+  _setText(n0, "12")
   return n0
 }"
 `;
@@ -523,12 +523,12 @@ export function render(_ctx, $props, $emit, $attrs, $slots) {
 `;
 
 exports[`compile > static + dynamic root 1`] = `
-"import { toDisplayString as _toDisplayString, setText as _setText, template as _template } from 'vue';
+"import { setText as _setText, template as _template } from 'vue';
 const t0 = _template(" ")
 
 export function render(_ctx) {
   const n0 = t0()
-  _setText(n0, _toDisplayString(1) + _toDisplayString(2) + "3" + _toDisplayString(4) + _toDisplayString(5) + "6" + _toDisplayString(7) + _toDisplayString(8) + "9" + 'A' + 'B')
+  _setText(n0, "123456789AB")
   return n0
 }"
 `;

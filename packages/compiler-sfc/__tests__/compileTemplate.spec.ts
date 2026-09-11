@@ -624,3 +624,24 @@ test('respects comments option when returning multiRoot metadata', () => {
 
   expect(result.multiRoot).toBe(false)
 })
+
+test('forwards the Vapor IR optimization level', () => {
+  const options = {
+    filename: 'example.vue',
+    source: '<div>{{ 1 + 2 }}</div>',
+    vapor: true,
+  }
+  const disabled = compile({ ...options, compilerOptions: { optLevel: 0 } })
+  const enabled = compile({ ...options, compilerOptions: { optLevel: 1 } })
+  expect(disabled.errors).toEqual([])
+  expect(enabled.errors).toEqual([])
+  expect(disabled.code).toContain('_setText')
+  expect(enabled.code).not.toContain('_setText')
+  const partial = compile({
+    ...options,
+    source: '<div>{{ value + (2 + 3) }}</div>',
+    compilerOptions: { optLevel: 2 },
+  })
+  expect(partial.errors).toEqual([])
+  expect(partial.code).toContain('_ctx.value + (5)')
+})

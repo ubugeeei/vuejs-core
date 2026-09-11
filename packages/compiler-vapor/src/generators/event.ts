@@ -6,13 +6,9 @@ import {
   isMemberExpression,
 } from '@vue/compiler-dom'
 import type { CodegenContext } from '../generate'
-import {
-  IRNodeTypes,
-  type OperationNode,
-  type SetDynamicEventsIRNode,
-  type SetEventIRNode,
-} from '../ir'
+import type { SetDynamicEventsIRNode, SetEventIRNode } from '../ir'
 import { genExpression } from './expression'
+import { isSingleDelegatedEvent } from '../optimizations/planEventDelegation'
 import {
   type CodeFragment,
   DELIMITERS_OBJECT_NEWLINE,
@@ -36,7 +32,10 @@ export function genSetEvent(
     // if this is the only delegated event of this name on this element,
     // we can generate optimized handler attachment code
     // e.g. n1.$evtclick = () => {}
-    if (!context.block.operation.some(isSameDelegateEvent)) {
+    if (
+      oper.delegateDirect ??
+      isSingleDelegatedEvent(oper, context.block.operation)
+    ) {
       return [
         NEWLINE,
         `n${element}.$evt${key.content} = `,
@@ -94,18 +93,6 @@ export function genSetEvent(
       DELIMITERS_OBJECT_NEWLINE,
       ...options.map((option): CodeFragment[] => [`${option}: true`]),
     )
-  }
-
-  function isSameDelegateEvent(op: OperationNode) {
-    if (
-      op.type === IRNodeTypes.SET_EVENT &&
-      op !== oper &&
-      op.delegate &&
-      op.element === oper.element &&
-      op.key.content === key.content
-    ) {
-      return true
-    }
   }
 }
 

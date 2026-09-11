@@ -224,11 +224,16 @@ export class TransformContext<T extends AllNode = AllNode> {
 
   private canUseStaticTemplate(): boolean {
     if (!this.template) return false
-    if (this.inVFor) return false
-    if (this.dynamic.hasDynamicChild) return false
-    if (this.block.effect.length !== this.effectIndex) return false
-    if (this.block.operation.length !== this.operationIndex) return false
+    if (!this.dynamic.staticTemplateEligible) return false
+    return (
+      !this.dynamic.hasDynamicChild &&
+      this.block.effect.length === this.effectIndex &&
+      this.block.operation.length === this.operationIndex
+    )
+  }
 
+  private isStaticTemplateEligible(): boolean {
+    if (this.inVFor) return false
     if (
       this.node.type === NodeTypes.TEXT ||
       this.node.type === NodeTypes.COMMENT
@@ -275,6 +280,7 @@ export class TransformContext<T extends AllNode = AllNode> {
   }
   registerTemplate(): number {
     if (!this.template) return -1
+    this.dynamic.staticTemplateEligible = this.isStaticTemplateEligible()
     const id = this.pushTemplate(this.template, {
       root: this.templateRoot,
       static: this.canUseStaticTemplate(),

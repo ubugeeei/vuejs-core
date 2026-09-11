@@ -28,7 +28,7 @@ import { transformSlotOutlet } from './transforms/transformSlotOutlet'
 import { transformVSlot } from './transforms/vSlot'
 import { transformTransition } from './transforms/transformTransition'
 import type { HackOptions } from './ir'
-import { optimize } from './optimize'
+import { type OptimizationOptions, optimize } from './optimize'
 import { transformKey } from './transforms/transformKey'
 
 export { wrapTemplate } from './transforms/utils'
@@ -68,11 +68,12 @@ export function compile(
     }),
   )
 
-  optimize(ir)
+  optimize(ir, resolvedOptions)
   return generate(ir, resolvedOptions)
 }
 
-export type CompilerOptions = HackOptions<BaseCompilerOptions>
+export type CompilerOptions = HackOptions<BaseCompilerOptions> &
+  OptimizationOptions
 export type TransformPreset = [
   NodeTransform[],
   Record<string, DirectiveTransform>,

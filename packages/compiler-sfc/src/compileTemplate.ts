@@ -62,7 +62,7 @@ export interface SFCTemplateCompileOptions {
   ssrCssVars?: string[]
   inMap?: RawSourceMap
   compiler?: TemplateCompiler
-  compilerOptions?: CompilerOptions
+  compilerOptions?: CompilerOptions & CompilerVapor.OptimizationOptions
   preprocessLang?: string
   preprocessOptions?: any
   /**

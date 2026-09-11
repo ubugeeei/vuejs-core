@@ -111,7 +111,18 @@ export function genEffects(
     frag: declarationFrags,
     varNames,
     expressionReplacements,
-  } = processExpressions(context, expressions, shouldDeclare)
+  } = processExpressions(
+    context,
+    expressions,
+    shouldDeclare,
+    effects[0]?.expressionCache &&
+      effects[0].expressionCache.expressions.length === expressions.length &&
+      effects[0].expressionCache.expressions.every(
+        (exp, index) => exp === expressions[index],
+      )
+      ? effects[0].expressionCache.plan
+      : undefined,
+  )
   if (shouldDeclare && !declarationFrags.length && !varNames.length) {
     const effect = effects.length === 1 ? effects[0] : undefined
     const operation =

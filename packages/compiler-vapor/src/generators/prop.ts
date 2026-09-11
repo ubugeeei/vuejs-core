@@ -21,7 +21,6 @@ import {
   NEWLINE,
   genCall,
   genMulti,
-  getParserOptions,
 } from './utils'
 import {
   camelize,
@@ -33,7 +32,7 @@ import {
   shouldSetAsAttr,
   toHandlerKey,
 } from '@vue/shared'
-import { getLiteralExpressionValue } from '../utils'
+import { getLiteralExpressionValue, getParserOptions } from '../utils'
 import { parseExpression } from '@babel/parser'
 import type {
   ConditionalExpression,

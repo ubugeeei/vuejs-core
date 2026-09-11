@@ -1,3 +1,4 @@
+import type { ParserOptions } from '@babel/parser'
 import { VaporBlockShape, isGloballyAllowed } from '@vue/shared'
 import {
   type AttributeNode,
@@ -183,4 +184,23 @@ export function getBlockShape(block: BlockIRNode): VaporBlockShape {
   return block.returns.length === 1
     ? VaporBlockShape.SINGLE_ROOT
     : VaporBlockShape.MULTI_ROOT
+}
+
+export function getParserOptions(
+  plugins: ParserOptions['plugins'],
+): ParserOptions {
+  return {
+    plugins: plugins
+      ? plugins.some(plugin => plugin === 'typescript')
+        ? plugins
+        : [...plugins, 'typescript']
+      : ['typescript'],
+  }
+}
+
+export function genVarName(exp: string): string {
+  return `${exp
+    .replace(/[^a-zA-Z0-9]/g, '_')
+    .replace(/_+/g, '_')
+    .replace(/_+$/, '')}`
 }

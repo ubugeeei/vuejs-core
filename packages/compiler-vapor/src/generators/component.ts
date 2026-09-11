@@ -37,7 +37,8 @@ import {
   genFlags,
   genMulti,
 } from './utils'
-import { genExpression, genVarName } from './expression'
+import { genExpression } from './expression'
+import { genVarName } from '../utils'
 import { genPropKey, genPropValue } from './prop'
 import {
   type SimpleExpressionNode,

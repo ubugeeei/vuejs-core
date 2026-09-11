@@ -12,6 +12,7 @@ import * as runtimeDom from '@vue/runtime-dom'
 import * as VueServerRenderer from '@vue/server-renderer'
 import {
   type CompilerOptions,
+  type OptimizationOptions,
   compile as compileVapor,
 } from '@vue/compiler-vapor'
 import { VaporIfFlags } from '@vue/shared'
@@ -172,9 +173,11 @@ export function compile(
   {
     vapor = true,
     ssr = false,
+    compilerOptions,
   }: {
     vapor?: boolean | undefined
     ssr?: boolean | undefined
+    compilerOptions?: OptimizationOptions
   } = {},
 ): any {
   if (!sfc.includes(`<script`)) {
@@ -192,6 +195,7 @@ export function compile(
     vapor,
     templateOptions: {
       ssr,
+      compilerOptions,
     },
   })
 

@@ -55,17 +55,14 @@ import {
 import { EMPTY_EXPRESSION } from './utils'
 import {
   findProp,
+  getParserOptions,
   isBuiltInComponent,
   isComponentTag,
   isStaticExpression,
   resolveExpression,
 } from '../utils'
 import { dynamicComponentKeys } from './transformKey'
-import {
-  IMPORT_EXP_END,
-  IMPORT_EXP_START,
-  getParserOptions,
-} from '../generators/utils'
+import { IMPORT_EXP_END, IMPORT_EXP_START } from '../generators/utils'
 import { normalizeBindShorthand } from './vBind'
 import { ignoreVHtmlChildren } from './vHtml'
 import type { Expression, ObjectExpression, ObjectProperty } from '@babel/types'

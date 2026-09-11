@@ -1,3 +1,4 @@
+import type { ExpressionCachePlan } from '../optimizations/cacheExpressions'
 import type {
   CompoundExpressionNode,
   DirectiveNode,
@@ -80,6 +81,7 @@ export interface RootIRNode {
   directive: Set<string>
   block: BlockIRNode
   hasTemplateRef: boolean
+  singleUseAssetComponents?: Set<string>
 }
 
 export interface IRTemplate {
@@ -186,6 +188,7 @@ export interface SetEventIRNode extends BaseIRNode {
   }
   keyOverride?: KeyOverride
   delegate: boolean
+  delegateDirect?: boolean
   /** Whether it's in effect */
   effect: boolean
 }
@@ -302,10 +305,16 @@ export interface IRDynamicInfo {
   // Offset of the generated text placeholder inside this element.
   textContentOffset?: number
   hasDynamicChild?: boolean
+  staticTemplateEligible?: boolean
+  domAccess?: { inline: boolean; adjacent?: boolean }
   operation?: OperationNode
 }
 
 export interface IREffect {
+  expressionCache?: {
+    expressions: SimpleExpressionNode[]
+    plan: ExpressionCachePlan
+  }
   expressions: SimpleExpressionNode[]
   operations: OperationNode[]
 }

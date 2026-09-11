@@ -1,3 +1,4 @@
+export { optimize, type OptimizationOptions } from './optimize'
 export { parse } from '@vue/compiler-dom'
 export {
   transform,

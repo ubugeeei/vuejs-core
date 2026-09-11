@@ -9,7 +9,6 @@ import {
 } from '@vue/compiler-dom'
 import { isArray, isString } from '@vue/shared'
 import type { CodegenContext } from '../generate'
-import type { ParserOptions } from '@babel/parser'
 
 /**
  * Run a helper call inside the once ambient: a helper that creates its own
@@ -115,18 +114,6 @@ export function genCall(
   const fnName = hasPlaceholder ? name[0] : name
   const placeholder = hasPlaceholder ? name[1] : 'null'
   return [fnName, ...genMulti(['(', ')', ', ', placeholder], ...frags)]
-}
-
-export function getParserOptions(
-  plugins: CodegenContext['options']['expressionPlugins'],
-): ParserOptions {
-  return {
-    plugins: plugins
-      ? plugins.some(plugin => plugin === 'typescript')
-        ? plugins
-        : [...plugins, 'typescript']
-      : ['typescript'],
-  }
 }
 
 export function codeFragmentToString(

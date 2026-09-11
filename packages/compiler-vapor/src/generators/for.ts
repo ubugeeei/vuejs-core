@@ -1,3 +1,4 @@
+import { getParserOptions } from '../utils'
 import {
   type SimpleExpressionNode,
   createSimpleExpression,
@@ -21,7 +22,6 @@ import {
   genCall,
   genFlags,
   genMulti,
-  getParserOptions,
 } from './utils'
 import type { Expression, Identifier, Node } from '@babel/types'
 import { parseExpression } from '@babel/parser'

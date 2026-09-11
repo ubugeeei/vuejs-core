@@ -4,11 +4,10 @@ import type {
   CreateComponentIRNode,
   ForIRNode,
   IRDynamicInfo,
-  IRSlots,
   IfIRNode,
   OperationNode,
 } from '../ir'
-import { IRNodeTypes, IRSlotType, isBlockOperation } from '../ir'
+import { IRNodeTypes, isBlockOperation } from '../ir'
 import {
   type CodeFragment,
   DELIMITERS_ARRAY,
@@ -28,6 +27,7 @@ import {
 import { genChildren, genSelf } from './template'
 import { toValidAssetId } from '@vue/compiler-dom'
 import { VaporSlotFlags } from '@vue/shared'
+import { planAssets } from '../optimizations/planAssets'
 
 export function genBlock(
   oper: BlockIRNode,
@@ -62,7 +62,7 @@ export function genBlockContent(
   const modelOperations = operation.filter(isVModelOperation)
   const resetBlock = context.enterBlock(block)
   const singleUseAssetComponentNames = root
-    ? collectSingleUseAssetComponents(block)
+    ? context.ir.singleUseAssetComponents || planAssets(context.ir)
     : undefined
   const prevSingleUseAssetComponentNames = context.singleUseAssetComponentNames
 
@@ -364,122 +364,4 @@ function isStableTemplateSlotRoot(
   const content = context.ir.template.entries[child.template].content
   // Preserved whitespace is a real text root; trim only for comment detection.
   return content !== '' && !commentOnlyTemplateRE.test(content.trim())
-}
-
-interface AssetComponentUsage {
-  count: number
-  root: boolean
-}
-
-function collectSingleUseAssetComponents(block: BlockIRNode): Set<string> {
-  const usageMap = new Map<string, AssetComponentUsage>()
-  const seenOperations = new Set<OperationNode>()
-
-  // createAssetComponent is only emitted from the root block. Nested blocks,
-  // including component slots, still need the hoisted resolveComponent binding.
-  visitBlock(block, true)
-
-  const names = new Set<string>()
-
-  for (const [name, usage] of usageMap) {
-    if (usage.count === 1 && usage.root) {
-      names.add(name)
-    }
-  }
-
-  return names
-
-  function visitBlock(block: BlockIRNode, rootCandidate: boolean) {
-    visitDynamic(block.dynamic, rootCandidate)
-
-    for (const operation of block.operation) {
-      visitOperation(operation, rootCandidate)
-    }
-
-    for (const effect of block.effect) {
-      for (const operation of effect.operations) {
-        visitOperation(operation, false)
-      }
-    }
-  }
-
-  function visitDynamic(dynamic: IRDynamicInfo, rootCandidate: boolean) {
-    if (dynamic.operation) {
-      visitOperation(dynamic.operation, rootCandidate)
-    }
-
-    for (const child of dynamic.children) {
-      visitDynamic(child, rootCandidate)
-    }
-  }
-
-  function visitOperation(operation: OperationNode, rootCandidate: boolean) {
-    if (seenOperations.has(operation)) {
-      return
-    }
-    seenOperations.add(operation)
-
-    if (operation.type === IRNodeTypes.CREATE_COMPONENT_NODE) {
-      if (operation.asset) {
-        const usage = usageMap.get(operation.tag) || {
-          count: 0,
-          root: false,
-        }
-        usage.count++
-        if (rootCandidate) {
-          usage.root = true
-        }
-        usageMap.set(operation.tag, usage)
-      }
-
-      visitSlots(operation.slots)
-      return
-    }
-
-    switch (operation.type) {
-      case IRNodeTypes.IF:
-        visitBlock(operation.positive, false)
-        if (operation.negative) {
-          if (operation.negative.type === IRNodeTypes.IF) {
-            visitOperation(operation.negative, false)
-          } else {
-            visitBlock(operation.negative, false)
-          }
-        }
-        break
-      case IRNodeTypes.FOR:
-        visitBlock(operation.render, false)
-        break
-      case IRNodeTypes.KEY:
-        visitBlock(operation.block, false)
-        break
-      case IRNodeTypes.SLOT_OUTLET_NODE:
-        if (operation.fallback) {
-          visitBlock(operation.fallback, false)
-        }
-        break
-    }
-  }
-
-  function visitSlots(slots: IRSlots[]) {
-    for (const slot of slots) {
-      switch (slot.slotType) {
-        case IRSlotType.STATIC:
-          for (const name in slot.slots) {
-            visitBlock(slot.slots[name], false)
-          }
-          break
-        case IRSlotType.DYNAMIC:
-        case IRSlotType.LOOP:
-          visitBlock(slot.fn, false)
-          break
-        case IRSlotType.CONDITIONAL:
-          visitSlots([slot.positive])
-          if (slot.negative) {
-            visitSlots([slot.negative])
-          }
-          break
-      }
-    }
-  }
 }

@@ -1,21 +1,20 @@
-import { createSimpleExpression, unwrapTSNode } from '@vue/compiler-dom'
-import type { Node } from '@babel/types'
+import {
+  type SimpleExpressionNode,
+  createSimpleExpression,
+} from '@vue/compiler-dom'
 import { escapeHtml } from '@vue/shared'
 import {
-  type BlockIRNode,
   DynamicFlag,
   type IRDynamicInfo,
   IRNodeTypes,
-  IRSlotType,
-  type IRSlots,
   type IRTemplate,
-  type InsertionStateTypes,
   type OperationNode,
   type RootIRNode,
   type SetTextIRNode,
-  isBlockOperation,
 } from '../ir'
 import { getLiteralExpressionValue } from '../utils'
+import { type BlockAnalysis, collectBlocks } from './analysis'
+import { getConstantValue } from './constantEvaluation'
 
 interface TemplateEdit {
   offset: number
@@ -29,31 +28,54 @@ interface TemplatePlan {
   edits: TemplateEdit[]
 }
 
-interface BlockData {
-  block: BlockIRNode
-  operations: Set<OperationNode>
-  boundaries: InsertionStateTypes[]
+interface BlockData extends BlockAnalysis {
   texts: Map<number, { operation: SetTextIRNode; text: string }>
   changed: boolean
 }
 
 // The first computation rule consumes SET_TEXT operands. Other consumers need
 // their own serialization rules: a numeric prop must remain a number, for example.
-export function compileTimeComputation(ir: RootIRNode): void {
-  const blocks = collectBlocks(ir.block)
+export function compileTimeComputation(
+  ir: RootIRNode,
+  analysis: BlockAnalysis[] = collectBlocks(ir.block),
+  computed?: Set<SimpleExpressionNode>,
+): void {
+  const blocks: BlockData[] = analysis.map(block => ({
+    ...block,
+    texts: new Map(),
+    changed: false,
+  }))
   let hasStaticText = false
   for (const { block, texts } of blocks) {
     for (const operation of block.operation) {
       if (operation.type !== IRNodeTypes.SET_TEXT) continue
-      const text = computeText(operation)
+      const text = computeText(operation, computed)
       if (text !== undefined) {
         texts.set(operation.element, { operation, text })
         hasStaticText = true
       }
     }
     for (const effect of block.effect) {
+      let replacements:
+        | Map<SimpleExpressionNode, SimpleExpressionNode>
+        | undefined
       for (const operation of effect.operations) {
-        if (operation.type === IRNodeTypes.SET_TEXT) computeText(operation)
+        if (operation.type !== IRNodeTypes.SET_TEXT) continue
+        const values = operation.values
+        computeText(operation, computed)
+        if (values !== operation.values) {
+          replacements ||= new Map()
+          for (let i = 0; i < values.length; i++) {
+            if (values[i] !== operation.values[i]) {
+              replacements.set(values[i], operation.values[i])
+            }
+          }
+        }
+      }
+      if (replacements) {
+        effect.expressions = effect.expressions.map(
+          exp => replacements.get(exp) || exp,
+        )
       }
     }
   }
@@ -117,7 +139,10 @@ export function compileTimeComputation(ir: RootIRNode): void {
     // and constructing the same Set again for each cleanup step.
     for (const id of block.returns) references.add(id)
     for (const op of operations) {
-      if (removed.has(op)) continue
+      if (removed.has(op)) {
+        operations.delete(op)
+        continue
+      }
       if ('element' in op) references.add(op.element)
       if ('id' in op) references.add(op.id)
       if ('elements' in op) op.elements.forEach(id => references.add(id))
@@ -264,19 +289,27 @@ export function compileTimeComputation(ir: RootIRNode): void {
   }
 }
 
-function computeText(operation: SetTextIRNode): string | undefined {
+function computeText(
+  operation: SetTextIRNode,
+  folded?: Set<SimpleExpressionNode>,
+): string | undefined {
   let computed = false
+  let copied = false
   let text: string | undefined = ''
   for (let i = 0; i < operation.values.length; i++) {
     const exp = operation.values[i]
     let literal = getLiteralExpressionValue(exp)
-    if (literal === null && exp.ast) {
-      const value = evaluateConstant(exp.ast)
+    if (folded?.has(exp)) computed = true
+    if (literal === null) {
+      const value = getConstantValue(exp)
       // HTML parsing normalizes CR/NUL and strips a leading LF in pre/textarea.
       if (value !== undefined && !/[\r\n\0]/.test(String(value))) {
-        if (!computed) operation.values = operation.values.slice()
+        if (!copied) {
+          operation.values = operation.values.slice()
+          copied = true
+        }
         computed = true
-        literal = String(value)
+        literal = value === null ? '' : String(value)
         operation.values[i] = createSimpleExpression(literal, true, exp.loc)
       }
     }
@@ -297,136 +330,4 @@ function getShift(edits: TemplateEdit[], position: number): number {
     else high = mid
   }
   return low ? edits[low - 1].delta! : 0
-}
-
-function collectBlocks(root: BlockIRNode): BlockData[] {
-  const blocks = new Map<BlockIRNode, BlockData>()
-  visitBlock(root)
-  return [...blocks.values()]
-
-  function visitBlock(block: BlockIRNode) {
-    if (blocks.has(block)) return
-    const data: BlockData = {
-      block,
-      operations: new Set(block.operation),
-      boundaries: [],
-      texts: new Map(),
-      changed: false,
-    }
-    blocks.set(block, data)
-    for (const effect of block.effect) {
-      for (const operation of effect.operations) data.operations.add(operation)
-    }
-    visitDynamic(block.dynamic, data.operations)
-    for (const operation of data.operations) {
-      if (isBlockOperation(operation)) data.boundaries.push(operation)
-      visitOperation(operation)
-    }
-  }
-
-  function visitDynamic(
-    dynamic: IRDynamicInfo,
-    operations: Set<OperationNode>,
-  ) {
-    if (dynamic.operation) operations.add(dynamic.operation)
-    for (const child of dynamic.children) visitDynamic(child, operations)
-  }
-
-  function visitOperation(operation: OperationNode) {
-    switch (operation.type) {
-      case IRNodeTypes.IF:
-        visitBlock(operation.positive)
-        if (operation.negative) {
-          if (operation.negative.type === IRNodeTypes.IF) {
-            visitOperation(operation.negative)
-          } else visitBlock(operation.negative)
-        }
-        break
-      case IRNodeTypes.FOR:
-        visitBlock(operation.render)
-        break
-      case IRNodeTypes.KEY:
-        visitBlock(operation.block)
-        break
-      case IRNodeTypes.SLOT_OUTLET_NODE:
-        if (operation.fallback) visitBlock(operation.fallback)
-        break
-      case IRNodeTypes.CREATE_COMPONENT_NODE:
-        operation.slots.forEach(visitSlot)
-        break
-    }
-  }
-
-  function visitSlot(slot: IRSlots) {
-    switch (slot.slotType) {
-      case IRSlotType.STATIC:
-        Object.values(slot.slots).forEach(visitBlock)
-        break
-      case IRSlotType.DYNAMIC:
-      case IRSlotType.LOOP:
-        visitBlock(slot.fn)
-        break
-      case IRSlotType.CONDITIONAL:
-        visitSlot(slot.positive)
-        if (slot.negative) visitSlot(slot.negative)
-        break
-    }
-  }
-}
-
-function evaluateConstant(node: Node): string | number | undefined {
-  node = unwrapTSNode(node)
-  switch (node.type) {
-    case 'StringLiteral':
-      return node.value
-    case 'NumericLiteral':
-      return Number.isFinite(node.value) ? node.value : undefined
-    case 'ParenthesizedExpression':
-      return evaluateConstant(node.expression)
-    case 'UnaryExpression': {
-      const value = evaluateConstant(node.argument)
-      if (typeof value !== 'number') return
-      switch (node.operator) {
-        case '+':
-          return value
-        case '-':
-          return -value
-      }
-      return
-    }
-    case 'BinaryExpression': {
-      const left = evaluateConstant(node.left)
-      const right = evaluateConstant(node.right)
-      if (left === undefined || right === undefined) return
-      if (
-        node.operator === '+' &&
-        (typeof left === 'string' || typeof right === 'string')
-      ) {
-        return String(left) + String(right)
-      }
-      if (typeof left !== 'number' || typeof right !== 'number') return
-      let value: number
-      switch (node.operator) {
-        case '+':
-          value = left + right
-          break
-        case '-':
-          value = left - right
-          break
-        case '*':
-          value = left * right
-          break
-        case '/':
-          value = left / right
-          break
-        case '%':
-          value = left % right
-          break
-        default:
-          // Exponentiation is implementation-approximated across JS engines.
-          return
-      }
-      if (Number.isFinite(value)) return value
-    }
-  }
 }
