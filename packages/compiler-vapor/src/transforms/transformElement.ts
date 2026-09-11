@@ -509,7 +509,15 @@ function transformNativeElement(
     }
   }
 
-  template += `>` + context.childrenTemplate.join('')
+  template += `>`
+  if (context.dynamic.textContentOffset !== undefined) {
+    context.dynamic.textContentOffset = template.length
+  }
+  for (let i = 0; i < context.childrenTemplate.length; i++) {
+    const child = context.dynamic.children[i]
+    if (child) child.templateOffset = template.length
+    template += context.childrenTemplate[i] || ''
+  }
   if (!isVoidTag(tag) && !omitEndTag) {
     template += `</${tag}>`
   }

@@ -28,11 +28,12 @@ import { transformSlotOutlet } from './transforms/transformSlotOutlet'
 import { transformVSlot } from './transforms/vSlot'
 import { transformTransition } from './transforms/transformTransition'
 import type { HackOptions } from './ir'
+import { optimize } from './optimize'
 import { transformKey } from './transforms/transformKey'
 
 export { wrapTemplate } from './transforms/utils'
 
-// code/AST -> IR (transform) -> JS (generate)
+// code/AST -> IR (transform) -> IR (optimize) -> JS (generate)
 export function compile(
   source: string | RootNode,
   options: CompilerOptions = {},
@@ -67,6 +68,7 @@ export function compile(
     }),
   )
 
+  optimize(ir)
   return generate(ir, resolvedOptions)
 }
 

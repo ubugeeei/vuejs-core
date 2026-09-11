@@ -297,6 +297,10 @@ export interface IRDynamicInfo {
   anchor?: number
   children: IRDynamicInfo[]
   template?: number
+  // UTF-16 offset in the parent template, before this node owns a template.
+  templateOffset?: number
+  // Offset of the generated text placeholder inside this element.
+  textContentOffset?: number
   hasDynamicChild?: boolean
   operation?: OperationNode
 }
