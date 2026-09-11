@@ -1,8 +1,10 @@
 import {
   createComponent,
+  createVaporApp,
   defineVaporComponent,
   setBlockKey,
   template,
+  vaporInteropPlugin,
 } from '../../src'
 import {
   getTransitionKey,
@@ -2313,3 +2315,70 @@ describe('Transition', () => {
     expect(host.innerHTML).toContain('fallback')
   })
 })
+
+test.each(['default', 'out-in', 'in-out'])(
+  'disposes VDOM branch effects while preserving its pending leave (%s)',
+  async mode => {
+    let finishLeave!: () => void
+    const leave = vi.fn((_el: Element, done: () => void) => {
+      finishLeave = done
+    })
+    const enter = (_el: Element, done: () => void) => done()
+    const afterLeave = vi.fn()
+    const read = vi.fn()
+    const dispose = vi.fn()
+    const unmounted = vi.fn()
+    const data = ref({
+      show: true,
+      value: 'a',
+      leave,
+      enter,
+      afterLeave,
+      read,
+      dispose,
+      unmounted,
+    })
+    const Child = compile(
+      `<script setup>
+      import { watchEffect, onScopeDispose, onUnmounted } from 'vue'
+      const data = _data
+      watchEffect(() => data.value.read(data.value.value))
+      onScopeDispose(data.value.dispose)
+      onUnmounted(data.value.unmounted)
+      </script><template><span>{{ data.value }}</span></template>`,
+      data,
+      {},
+      { vapor: false },
+    )
+    const Parent = compile(
+      `<script setup>const data = _data; const Child = _components.Child</script><template><main><Transition ${mode === 'default' ? '' : `mode="${mode}"`} :css="false" @enter="data.enter" @leave="data.leave" @after-leave="data.afterLeave"><Child v-if="data.show"/><b v-else>{{ data.value }}</b></Transition></main></template>`,
+      data,
+      { Child },
+    )
+    const container = document.createElement('div')
+    const app = createVaporApp(Parent).use(vaporInteropPlugin)
+    app.mount(container)
+    const span = container.querySelector('span')!
+    const parent = span.parentNode
+    data.value.show = false
+    await nextTick()
+    expect(leave).toHaveBeenCalledTimes(1)
+    expect(leave.mock.calls[0][0]).toBe(span)
+    expect(span.parentNode).toBe(parent)
+    expect(afterLeave).not.toHaveBeenCalled()
+    expect(dispose).toHaveBeenCalledTimes(1)
+    expect(unmounted).toHaveBeenCalledTimes(1)
+    data.value.value = 'b'
+    await nextTick()
+    expect(read.mock.calls).toEqual([['a']])
+    expect(span.textContent).toBe('a')
+    finishLeave()
+    await nextTick()
+    expect(span.parentNode).toBeNull()
+    expect(afterLeave).toHaveBeenCalledTimes(1)
+    expect(container.querySelector('b')!.textContent).toBe('b')
+    app.unmount()
+    expect(dispose).toHaveBeenCalledTimes(1)
+    expect(unmounted).toHaveBeenCalledTimes(1)
+  },
+)

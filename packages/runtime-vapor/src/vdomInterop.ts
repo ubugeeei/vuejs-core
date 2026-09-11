@@ -1435,6 +1435,7 @@ function createVDOMComponent(
   let isMounted = false
   let isUnmounted = false
   let isDomRemoved = false
+  let pendingScopeDispose = false
   const removeDom = (parentNode?: ParentNode): void => {
     if (!parentNode || isDomRemoved) {
       return
@@ -1443,6 +1444,7 @@ function createVDOMComponent(
     isDomRemoved = true
   }
   const unmount = (parentNode?: ParentNode, transition?: TransitionHooks) => {
+    pendingScopeDispose = false
     if (isUnmounted) {
       if (!transition) removeDom(parentNode)
       return
@@ -1473,7 +1475,17 @@ function createVDOMComponent(
   // Capture ownership while creating the fragment, including native parents
   // whose DOM removal does not traverse nested component fragments.
   onScopeDispose(() => {
-    if (vnode.component) unmount()
+    if (!vnode.component) return
+    if (frag.$transition) {
+      // Branch teardown stops its scope before preparing transition leave.
+      // Let structural removal run first, with a fallback for native parents.
+      pendingScopeDispose = true
+      queuePostFlushCb(() => {
+        if (pendingScopeDispose) unmount()
+      })
+    } else {
+      unmount()
+    }
   }, true)
 
   frag.hydrate = () => {
